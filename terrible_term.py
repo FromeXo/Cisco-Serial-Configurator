@@ -1,52 +1,108 @@
-from time import sleep
 import serial
-from confs import EOL
+import re
+from time import sleep
 
-sus_prompts = [
-    b'Would you like to enter the initial configuration dialog? [yes/no]: \r\n',
-    b'Would you like to enter the initial configuration dialog? [yes/no]: \r\n',
-    b"% Please answer 'yes' or 'no'.\r\n"]
+HOSTNAME_PATTERN = '[A-z][\-A-z0-9]{0,62}'
+MODE_PATTERNS = [
+    {
+        'name': 'USER EXEC',
+        'pattern': HOSTNAME_PATTERN + '>'
+    },
+    {
+        'name': 'PRIVILEGED EXEC',
+        'pattern': HOSTNAME_PATTERN + '#'
+    },
+    {
+        'name': 'GLOBAL CONFIGURATION',
+        'pattern': HOSTNAME_PATTERN + '\(config\)#'
+    },
+    {
+        'name': 'LINE',
+        'pattern': HOSTNAME_PATTERN + '\(config\-line\)#'
+    },
+    {
+        'name': 'INTERFACE',
+        'pattern': HOSTNAME_PATTERN + '\(config-if\)#'
+    },
+    {
+        'name': 'VLAN',
+        'pattern': HOSTNAME_PATTERN + '\(config-VLAN\)#'
+    }
+]
 
-MODES_USER_EXEC = [b'Switch>\r\n', b'Router>\r\n']
+class TerribleTerm:
 
-def send_commands(serial_port, commands:list[str]):
-    ser = serial.Serial(
-        port     = serial_port,
-        baudrate = 9600,
-        parity   = serial.PARITY_NONE,
-        stopbits = serial.STOPBITS_ONE,
-        bytesize = serial.EIGHTBITS,
-        timeout  = 2)
-
-    ser.isOpen()
-
-    ser.write(str.encode(EOL))
-    out = ser.readline()
+    sh: serial.Serial
+    mode: str = ''
+    output: str = ''
     
-    # Time To Loop
-    TTL = 20
-    while out not in MODES_USER_EXEC:
-        print(out)    
-        ser.write(str.encode(EOL))
-        out = ser.readline()
-        sleep(0.1)
-        if out in sus_prompts:
-            ser.write(str.encode('no' + EOL))
-            out = ser.readline()
-        if TTL == 0:
-            break
-        else:
-            TTL -= 1
-    
-    
-    for command in commands:
-        ser.write(str.encode(command))
-        out = bytes()
-        sleep(0.1)
-        out = ser.readline()
-        out = out.decode('utf-8')
+    def __init__(self, port):
+        # Our Serial Connection
+        self.sh = serial.Serial(
+            port = port,
+            baudrate = 9600,
+            parity   = serial.PARITY_NONE,
+            stopbits = serial.STOPBITS_ONE,
+            bytesize = serial.EIGHTBITS,
+            timeout  = 6
+        )
+        # Open connection if it's not open
+        self.open()
         
-        print(out)
+        # Send <cr> to populate the class/obj
+        self.send_command()
+
+    def go_to_user_exec(self):
+        if self.mode == 'PRIVILEGED EXEC':
+            self.send_command('exit')
+            self.send_command()
+            
+        elif self.mode == 'USER EXEC':
+            return None
+        else:
+            self.send_command('end')
+            self.send_command('exit')
     
-    ser.close()
-    
+    def go_to_priv_exec(self):
+        if self.mode == 'PRIVILEGED EXEC':
+            return None
+        elif self.mode == 'USER EXEC':
+            self.send_command('enable')
+        else:
+            self.send_command('end')
+        
+    # Update the mode attribute to reflect our current position.
+    def set_mode(self, output):
+        
+        for pattern in MODE_PATTERNS:
+            if re.match(pattern['pattern'], output) is not None:
+                self.mode = pattern['name']
+                break
+
+    # Send command over the conection.
+    def send_command(self, cmd='', EOL='\r'):
+        if self.sh.isOpen():
+            cmd += EOL
+            self.sh.write(cmd.encode('utf-8', 'strict'))
+            sleep(0.3)
+            self.read_output()
+            sleep(0.1)
+            
+    # Read the output and store it in output attribute.
+    def read_output(self):
+        out = self.sh.read(self.sh.in_waiting)
+        self.output = str(out.decode('utf-8', 'strict')).strip()
+        self.set_mode(self.output)
+        print(self.output)
+        
+
+    # Close the Connection if it's open
+    def close(self):
+        if self.sh.isOpen():
+            self.sh.close()
+    # Open the Connection if it's closed.
+    def open(self):
+        if not self.sh.isOpen():
+            self.sh.open()
+            
+
